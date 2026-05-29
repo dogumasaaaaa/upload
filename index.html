@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitHub Music Repository Uploader</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .drag-over { border-color: #10b981; background-color: #ecfdf5; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen text-gray-800 font-sans">
+
+    <div class="max-w-4xl mx-auto p-6">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">🎵 GitHub Music Uploader</h1>
+            <p class="text-gray-600">Upload tracks directly to the <span class="font-semibold text-emerald-600">/music</span> folder of your repository.</p>
+        </header>
+
+        <div class="bg-white rounded-xl shadow-sm p-6 mb-6 border border-gray-200">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700 flex items-center gap-2">
+                <span>⚙️</span> GitHub Settings
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">GitHub Personal Access Token</label>
+                    <input type="password" id="token" placeholder="ghp_xxxxxxxxxxxx" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Repository Owner</label>
+                    <input type="text" id="owner" placeholder="Username or Org" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Repository Name</label>
+                    <input type="text" id="repo" placeholder="e.g., my-audio-repo" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Branch</label>
+                    <input type="text" id="branch" value="main" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Target Directory</label>
+                    <input type="text" value="music/" disabled class="w-full px-3 py-2 border border-gray-200 bg-gray-100 rounded-lg text-gray-500 cursor-not-allowed font-mono">
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white rounded-xl shadow-sm p-6 border border-gray-200">
+            <h2 class="text-xl font-semibold mb-4 text-gray-700 flex items-center gap-2">
+                <span>🎵</span> Drag & Drop Audio
+            </h2>
+            
+            <div id="dropzone" class="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center cursor-pointer hover:bg-gray-50 transition-colors mb-4">
+                <input type="file" id="fileInput" multiple class="hidden">
+                <div class="text-gray-500">
+                    <span class="text-4xl block mb-2">🎶</span>
+                    <p class="font-medium text-gray-700">Drop music files or audio folders here, or <span class="text-emerald-600 underline">browse</span></p>
+                </div>
+            </div>
+
+            <div id="fileListContainer" class="hidden mb-4">
+                <h3 class="text-sm font-semibold text-gray-600 mb-2">Queue (<span id="fileCount">0</span> items):</h3>
+                <div id="fileList" class="max-h-60 overflow-y-auto space-y-2 border border-gray-100 p-2 rounded-lg bg-gray-50"></div>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Commit Message</label>
+                <input type="text" id="commitMessage" value="Upload audio files to music library" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+            </div>
+
+            <button id="uploadBtn" disabled class="w-full bg-emerald-600 text-white font-medium py-3 px-4 rounded-lg hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors shadow-sm">
+                Upload to /music
+            </button>
+
+            <div id="consoleLog" class="hidden mt-6 p-4 bg-gray-900 text-emerald-400 font-mono text-xs rounded-lg max-h-64 overflow-y-auto whitespace-pre-wrap"></div>
+        </div>
+    </div>
+
+    <script>
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        const fileListContainer = document.getElementById('fileListContainer');
+        const fileCount = document.getElementById('fileCount');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const consoleLog = document.getElementById('consoleLog');
+
+        let selectedFiles = [];
+
+        // Save/Load config parameters
+        const fields = ['token', 'owner', 'repo', 'branch'];
+        fields.forEach(field => {
+            const savedValue = localStorage.getItem(`gh_music_${field}`);
+            if (savedValue) document.getElementById(field).value = savedValue;
+            document.getElementById(field).addEventListener('input', (e) => {
+                localStorage.setItem(`gh_music_${field}`, e.target.value);
+            });
+        });
+
+        dropzone.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('drag-over'); });
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag-over'));
+        dropzone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('drag-over');
+            
+            const items = e.dataTransfer.items;
+            if (items) {
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i].webkitGetAsEntry();
+                    if (item) traverseFileTree(item, "", []);
+                }
+            } else {
+                handleFiles(e.dataTransfer.files);
+            }
+        });
+
+        function traverseFileTree(item, path) {
+            path = path || "";
+            if (item.isFile) {
+                item.file(file => {
+                    file.relativePath = path + file.name;
+                    selectedFiles.push(file);
+                    updateUI();
+                });
+            } else if (item.isDirectory) {
+                let dirReader = item.createReader();
+                dirReader.readEntries(entries => {
+                    for (let i = 0; i < entries.length; i++) {
+                        traverseFileTree(entries[i], path + item.name + "/");
+                    }
+                });
+            }
+        }
+
+        function handleFiles(files) {
+            for (let file of files) {
+                file.relativePath = file.webkitRelativePath || file.name;
+                selectedFiles.push(file);
+            }
+            updateUI();
+        }
+
+        function updateUI() {
+            if (selectedFiles.length > 0) {
+                fileListContainer.classList.remove('hidden');
+                uploadBtn.disabled = false;
+                fileCount.textContent = selectedFiles.length;
+                fileList.innerHTML = selectedFiles.map((f, i) => `
+                    <div class="flex justify-between items-center bg-white p-2 text-sm rounded border border-gray-200 shadow-sm">
+                        <span class="truncate font-mono text-gray-700">music/${f.relativePath}</span>
+                        <span class="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded">${(f.size / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                `).join('');
+            } else {
+                fileListContainer.classList.add('hidden');
+                uploadBtn.disabled = true;
+            }
+        }
+
+        function log(message, isError = false) {
+            consoleLog.classList.remove('hidden');
+            const timestamp = new Date().toLocaleTimeString();
+            const colorClass = isError ? 'text-red-400' : 'text-emerald-400';
+            consoleLog.innerHTML += `<div class="${colorClass}">[${timestamp}] ${message}</div>`;
+            consoleLog.scrollTop = consoleLog.scrollHeight;
+        }
+
+        const toBase64 = file => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = error => reject(error);
+        });
+
+        async function getFileSha(url, token, branch) {
+            try {
+                const res = await fetch(`${url}?ref=${branch}`, {
+                    headers: { 'Authorization': `token ${token}` }
+                });
+                if (res.status === 200) {
+                    const data = await res.json();
+                    return data.sha;
+                }
+                return null;
+            } catch {
+                return null;
+            }
+        }
+
+        uploadBtn.addEventListener('click', async () => {
+            const token = document.getElementById('token').value.trim();
+            const owner = document.getElementById('owner').value.trim();
+            const repo = document.getElementById('repo').value.trim();
+            const branch = document.getElementById('branch').value.trim() || 'main';
+            const commitMessage = document.getElementById('commitMessage').value.trim();
+
+            if (!token || !owner || !repo) {
+                alert('Please fill out all API authentication credentials.');
+                return;
+            }
+
+            uploadBtn.disabled = true;
+            consoleLog.innerHTML = '';
+            log('Starting structured music upload...');
+
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                
+                // CRITICAL CHANGE: Forces 'music/' prefix and sanitizes paths
+                const cleanPath = `music/${file.relativePath}`.replace(/\/+/g, '/');
+                const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}`;
+
+                log(`Preparing [${i+1}/${selectedFiles.length}]: ${cleanPath}...`);
+
+                try {
+                    const contentBase64 = await toBase64(file);
+                    const sha = await getFileSha(apiUrl, token, branch);
+                    
+                    const payload = {
+                        message: `${commitMessage} - ${file.name}`,
+                        content: contentBase64,
+                        branch: branch
+                    };
+                    if (sha) payload.sha = sha;
+
+                    const response = await fetch(apiUrl, {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `token ${token}`,
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/vnd.github.v3+json'
+                        },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (response.ok) {
+                        log(`✅ Uploaded successfully: ${cleanPath}`);
+                    } else {
+                        const errData = await response.json();
+                        log(`❌ Error pushing ${cleanPath}: ${errData.message}`, true);
+                    }
+                } catch (err) {
+                    log(`❌ System processing error on ${file.name}: ${err.message}`, true);
+                }
+            }
+
+            log('🏁 Process complete. The track queue has cleared.');
+            selectedFiles = [];
+            updateUI();
+        });
+    </script>
+</body>
+</html>
