@@ -1,55 +1,111 @@
-name: Video Compression Pipeline
+name: Redgifs Profile Scraper to Koofr
 
 on:
   workflow_dispatch:
     inputs:
-      video_url:
-        description: 'Direct Stream URL (m3u8) or Video URL'
+      profile_url:
+        description: 'Redgifs Profile URL (e.g., https://www.redgifs.com/users/username)'
         required: true
         type: string
-      crf_value:
-        description: 'Compression quality (CRF 0-51: Higher means lower quality. 23-28 is ideal)'
-        required: false
-        default: '28'
+      max_count:
+        description: 'Max number of recent videos to download'
+        required: true
+        default: '10'
         type: string
 
 jobs:
-  compress_and_upload:
+  scrape_and_upload:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg curl
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
 
-      - name: Process and Compress Stream
-        run: |
-          echo "Processing video stream directly from source..."
-          # ffmpeg can read hls streams natively. 
-          # -protocol_whitelist allows it to securely request the segments listed in the m3u8 file.
-          ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto \
-            -i "${{ github.event.inputs.video_url }}" \
-            -vcodec libx264 \
-            -crf ${{ github.event.inputs.crf_value }} \
-            -vf "scale='min(1280,iw)':-2" \
-            -acodec aac \
-            -b:a 128k \
-            compressed_video.mp4
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install yt-dlp requests
 
-      - name: Upload to Koofr via WebDAV
-        env:
-          KOOFR_USER: "mf.y.dk745@gmail.com"
-          KOOFR_PASS: "twkuw4cdrkwx8wnp"
-        run: |
-          echo "Uploading to Koofr..."
-          FILENAME="compressed_$(date +'%Y%m%d_%H%M%S').mp4"
-          
-          curl -u "$KOOFR_USER:$KOOFR_PASS" \
-            -T compressed_video.mp4 \
-            "https://app.koofr.net/dav/Koofr/$FILENAME"
-          
-          echo "Upload complete!"
+     Silber-name: Run Scraper and WebDAV Upload
+      run: |
+        import os
+        import sys
+        import random
+        import string
+        import requests
+        import yt_dlp
+
+        profile_url = "${{ github.event.inputs.profile_url }}"
+        max_downloads = int("${{ github.event.inputs.max_count }}")
+
+        # Configurations
+        DOWNLOAD_DIR = 'downloads'
+        WEBDAV_URL = 'https://app.koofr.net/dav/Koofr'  # Standard Koofr WebDAV endpoint
+        USERNAME = 'mf.y.dk745@gmail.com'
+        PASSWORD = 'twkuw4cdrkwx8wnp'
+
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+        # Helper function to generate a truly random lowercase alphanumeric string
+        def generate_random_name(length=12):
+            letters_and_digits = string.ascii_lowercase + string.digits
+            return ''.join(random.choice(letters_and_digits) for _ in range(length))
+
+        # yt-dlp hooks into the post-processing phase right after a file completes downloading
+        def post_processor_hook(d):
+            if d['status'] == 'finished':
+                original_path = d['filename']
+                ext = os.path.splitext(original_path)[1] # Keeps .mp4 or original extension
+                
+                # Generate strict random clean name
+                random_filename = f"{generate_random_name()}{ext}"
+                new_path = os.path.join(DOWNLOAD_DIR, random_filename)
+                
+                # Rename the file locally
+                os.rename(original_path, new_path)
+                print(f"Renamed: {os.path.basename(original_path)} -> {random_filename}")
+                
+                # Immediately stream upload to Koofr WebDAV to save disk space
+                print(f"Uploading {random_filename} to Koofr...")
+                target_upload_url = f"{WEBDAV_URL}/{random_filename}"
+                
+                with open(new_path, 'rb') as f:
+                    response = requests.put(
+                        target_upload_url, 
+                        data=f, 
+                        auth=(USERNAME, PASSWORD)
+                    )
+                
+                if response.status_code in [201, 204]:
+                    print(f"Successfully uploaded {random_filename} to Koofr storage.")
+                    # Optional: Remove local file after successful cloud upload
+                    os.remove(new_path)
+                else:
+                    print(f"Failed to upload {random_filename}. WebDAV Status Code: {response.status_code}")
+
+        ydl_opts = {
+            'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s', # Temporary ID name, handled by hook later
+            'format': 'bestvideo+bestaudio/best',
+            'playlistend': max_downloads,
+            'ignoreerrors': True,
+            'progress_hooks': [post_processor_hook],
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.redgifs.com/'
+            }
+        }
+
+        print(f"Starting pipeline for profile: {profile_url}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            try:
+                ydl.download([profile_url])
+                print("\nAll tasks completed successfully!")
+            except Exception as e:
+                print(f"An error occurred during workflow execution: {e}")
+                sys.exit(1)
+      shell: python
