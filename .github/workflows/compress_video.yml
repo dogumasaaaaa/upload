@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       crf_value:
-        description: 'Compression quality (CRF 0-51: Higher means lower quality/smaller size. 23-28 is ideal)'
+        description: 'Compression quality (CRF 0-51: Higher means lower quality. 23-28 is ideal)'
         required: false
         default: '28'
         type: string
@@ -29,12 +29,18 @@ jobs:
       - name: Download Video
         run: |
           echo "Downloading video..."
-          curl -L "${{ github.event.inputs.video_url }}" -o input_video.mp4
+          # -f forces curl to fail on HTTP errors (like 403 or 404)
+          # -L follows redirects
+          # -A spoofs a browser User-Agent in case the hosting site blocks standard scripts
+          curl -f -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" "${{ github.event.inputs.video_url }}" -o input_video.mp4
+          
+          # Check if the file is actually a video or just text/HTML
+          echo "Checking file type..."
+          file input_video.mp4
 
       - name: Compress Video via FFmpeg
         run: |
           echo "Compressing video with CRF ${{ github.event.inputs.crf_value }}..."
-          # Uses H.264 video codec and AAC audio codec, scaling down to 720p maximum width to save extra space
           ffmpeg -i input_video.mp4 \
             -vcodec libx264 \
             -crf ${{ github.event.inputs.crf_value }} \
@@ -49,7 +55,6 @@ jobs:
           KOOFR_PASS: "twkuw4cdrkwx8wnp"
         run: |
           echo "Uploading to Koofr..."
-          # Generates a unique timestamped filename for your cloud storage
           FILENAME="compressed_$(date +'%Y%m%d_%H%M%S').mp4"
           
           curl -u "$KOOFR_USER:$KOOFR_PASS" \
