@@ -53,8 +53,8 @@ jobs:
         # WebDAV Configurations
         DOWNLOAD_DIR = 'downloads'
         WEBDAV_URL = 'https://app.koofr.net/dav/Koofr'
-        USERNAME = 'mf.y.dk745@gmail.com'
-        PASSWORD = 'twkuw4cdrkwx8wnp'
+        USERNAME = 'terdterd333@gmail.com'
+        PASSWORD = '539zcnjnqlqi2a3d'
 
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
