@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       profile_url:
-        description: 'Redgifs Profile URL (e.g., https://www.redgifs.com/users/username)'
+        description: 'Paste Redgifs Profile Link or Username (e.g., chastitybbgirl)'
         required: true
         type: string
       max_count:
@@ -31,7 +31,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install yt-dlp requests
 
-     Silber-name: Run Scraper and WebDAV Upload
+    - name: Run Scraper and WebDAV Upload
       run: |
         import os
         import sys
@@ -40,37 +40,39 @@ jobs:
         import requests
         import yt_dlp
 
-        profile_url = "${{ github.event.inputs.profile_url }}"
+        # Capture user input
+        raw_input = "${{ github.event.inputs.profile_url }}".strip()
         max_downloads = int("${{ github.event.inputs.max_count }}")
 
-        # Configurations
+        # Automatically format input into a valid profile URL if they just type the username
+        if "redgifs.com" in raw_input:
+            profile_url = raw_input
+        else:
+            profile_url = f"https://www.redgifs.com/users/{raw_input}"
+
+        # WebDAV Configurations
         DOWNLOAD_DIR = 'downloads'
-        WEBDAV_URL = 'https://app.koofr.net/dav/Koofr'  # Standard Koofr WebDAV endpoint
+        WEBDAV_URL = 'https://app.koofr.net/dav/Koofr'
         USERNAME = 'mf.y.dk745@gmail.com'
         PASSWORD = 'twkuw4cdrkwx8wnp'
 
         os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-        # Helper function to generate a truly random lowercase alphanumeric string
         def generate_random_name(length=12):
             letters_and_digits = string.ascii_lowercase + string.digits
             return ''.join(random.choice(letters_and_digits) for _ in range(length))
 
-        # yt-dlp hooks into the post-processing phase right after a file completes downloading
         def post_processor_hook(d):
             if d['status'] == 'finished':
                 original_path = d['filename']
-                ext = os.path.splitext(original_path)[1] # Keeps .mp4 or original extension
+                ext = os.path.splitext(original_path)[1]
                 
-                # Generate strict random clean name
                 random_filename = f"{generate_random_name()}{ext}"
                 new_path = os.path.join(DOWNLOAD_DIR, random_filename)
                 
-                # Rename the file locally
                 os.rename(original_path, new_path)
                 print(f"Renamed: {os.path.basename(original_path)} -> {random_filename}")
                 
-                # Immediately stream upload to Koofr WebDAV to save disk space
                 print(f"Uploading {random_filename} to Koofr...")
                 target_upload_url = f"{WEBDAV_URL}/{random_filename}"
                 
@@ -82,14 +84,13 @@ jobs:
                     )
                 
                 if response.status_code in [201, 204]:
-                    print(f"Successfully uploaded {random_filename} to Koofr storage.")
-                    # Optional: Remove local file after successful cloud upload
+                    print(f"Successfully uploaded {random_filename} to Koofr.")
                     os.remove(new_path)
                 else:
-                    print(f"Failed to upload {random_filename}. WebDAV Status Code: {response.status_code}")
+                    print(f"Failed to upload {random_filename}. Status: {response.status_code}")
 
         ydl_opts = {
-            'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s', # Temporary ID name, handled by hook later
+            'outtmpl': f'{DOWNLOAD_DIR}/%(id)s.%(ext)s',
             'format': 'bestvideo+bestaudio/best',
             'playlistend': max_downloads,
             'ignoreerrors': True,
@@ -100,12 +101,12 @@ jobs:
             }
         }
 
-        print(f"Starting pipeline for profile: {profile_url}")
+        print(f"Starting pipeline for target: {profile_url}")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
                 ydl.download([profile_url])
                 print("\nAll tasks completed successfully!")
             except Exception as e:
-                print(f"An error occurred during workflow execution: {e}")
+                print(f"An error occurred: {e}")
                 sys.exit(1)
       shell: python
