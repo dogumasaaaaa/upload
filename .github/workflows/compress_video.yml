@@ -1,0 +1,59 @@
+name: Video Compression Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'Direct URL of the video to compress'
+        required: true
+        type: string
+      crf_value:
+        description: 'Compression quality (CRF 0-51: Higher means lower quality/smaller size. 23-28 is ideal)'
+        required: false
+        default: '28'
+        type: string
+
+jobs:
+  compress_and_upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg curl
+
+      - name: Download Video
+        run: |
+          echo "Downloading video..."
+          curl -L "${{ github.event.inputs.video_url }}" -o input_video.mp4
+
+      - name: Compress Video via FFmpeg
+        run: |
+          echo "Compressing video with CRF ${{ github.event.inputs.crf_value }}..."
+          # Uses H.264 video codec and AAC audio codec, scaling down to 720p maximum width to save extra space
+          ffmpeg -i input_video.mp4 \
+            -vcodec libx264 \
+            -crf ${{ github.event.inputs.crf_value }} \
+            -vf "scale='min(1280,iw)':-2" \
+            -acodec aac \
+            -b:a 128k \
+            compressed_video.mp4
+
+      - name: Upload to Koofr via WebDAV
+        env:
+          KOOFR_USER: "mf.y.dk745@gmail.com"
+          KOOFR_PASS: "twkuw4cdrkwx8wnp"
+        run: |
+          echo "Uploading to Koofr..."
+          # Generates a unique timestamped filename for your cloud storage
+          FILENAME="compressed_$(date +'%Y%m%d_%H%M%S').mp4"
+          
+          curl -u "$KOOFR_USER:$KOOFR_PASS" \
+            -T compressed_video.mp4 \
+            "https://app.koofr.net/dav/Koofr/$FILENAME"
+          
+          echo "Upload complete!"
