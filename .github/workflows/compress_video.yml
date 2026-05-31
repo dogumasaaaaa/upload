@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       video_url:
-        description: 'Direct URL of the video to compress'
+        description: 'Direct Stream URL (m3u8) or Video URL'
         required: true
         type: string
       crf_value:
@@ -26,28 +26,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg curl
 
-      - name: Download Video
+      - name: Process and Compress Stream
         run: |
-          echo "Downloading from URL..."
-          curl -L -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
-               "${{ github.event.inputs.video_url }}" -o input_video.mp4
-          
-          echo "--- Investigating downloaded file type ---"
-          FILE_INFO=$(file input_video.mp4)
-          echo "$FILE_INFO"
-          
-          # If the file contains HTML or text, it's not a raw video
-          if [[ "$FILE_INFO" == *"HTML"* ]] || [[ "$FILE_INFO" == *"text"* ]]; then
-            echo "❌ ERROR: The provided URL returned a webpage or text file, NOT a raw video."
-            echo "--- Displaying the first 20 lines of the downloaded file below ---"
-            head -n 20 input_video.mp4
-            exit 1
-          fi
-
-      - name: Compress Video via FFmpeg
-        run: |
-          echo "Compressing video with CRF ${{ github.event.inputs.crf_value }}..."
-          ffmpeg -i input_video.mp4 \
+          echo "Processing video stream directly from source..."
+          # ffmpeg can read hls streams natively. 
+          # -protocol_whitelist allows it to securely request the segments listed in the m3u8 file.
+          ffmpeg -protocol_whitelist file,http,https,tcp,tls,crypto \
+            -i "${{ github.event.inputs.video_url }}" \
             -vcodec libx264 \
             -crf ${{ github.event.inputs.crf_value }} \
             -vf "scale='min(1280,iw)':-2" \
