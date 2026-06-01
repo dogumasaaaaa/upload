@@ -59,7 +59,6 @@ jobs:
         WEBDAV_PASS = os.getenv("WEBDAV_PASS")
         TOTAL_LIMIT_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 
-        # Headers to closely mimic a real browser session
         HEADERS = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -73,7 +72,7 @@ jobs:
 
         def get_koofr_used_space():
             cmd = [
-                "curl", "-s", "-X", "PROPFIND",
+                "curl", "-s", "-X", "PROFIND",
                 "--header", "Depth: 0",
                 "--header", "Content-Type: text/xml",
                 "--data", '<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:quota-used-bytes/></D:prop></D:propfind>',
@@ -138,48 +137,47 @@ jobs:
                     "yt-dlp",
                     "--user-agent", HEADERS["User-Agent"],
                     "--no-check-certificates",
-                    "--format", "mp4/best",
-                    "--merge-output-format", "mp4",
-                    "--fixup", "never",  # Direct bypass for freezing on fragmented stream fixes
+                    "--hls-use-mpegts",                  # Forces clean stream assembly directly to disk
                     "-o", f"{temp_output}.%(ext)s",
                     target
                 ]
                 
                 subprocess.run(ydl_opts)
                 
+                # Find the downloaded file regardless of its automatic container extension
                 downloaded_file = None
                 for file in os.listdir("."):
-                    if file.startswith(temp_output):
+                    if file.startswith(temp_output) and not file.endswith(".mp4_converted"):
                         downloaded_file = file
                         break
                 
-                if downloaded_file:
-                    base, ext = os.path.splitext(downloaded_file)
+                if downloaded_file and os.path.getsize(downloaded_file) > 0:
                     target_name = generate_random_name()
+                    print(f"File found: {downloaded_file} ({os.path.getsize(downloaded_file)} bytes). Processing to MP4...")
                     
-                    # Force conversion to clean standard mp4 containers if needed
-                    if ext.lower() != ".mp4":
-                        print(f"Converting format {ext} to standard .mp4 container via FFmpeg...")
-                        subprocess.run(["ffmpeg", "-i", downloaded_file, "-c", "copy", target_name, "-y"])
-                        os.remove(downloaded_file)
+                    # Explicit remux via FFmpeg handles stream fixing safely without freezing the execution flow
+                    subprocess.run(["ffmpeg", "-i", downloaded_file, "-c", "copy", "-bsf:a", "aac_adtstoasc", target_name, "-y"])
+                    os.remove(downloaded_file)
+                    
+                    # Extra validation verification check
+                    if os.path.exists(target_name) and os.path.getsize(target_name) > 0:
+                        print(f"Uploading target {target_name} ({os.path.getsize(target_name)} bytes) to Koofr cloud space...")
+                        upload_url = f"{WEBDAV_URL}/{target_name}"
+                        upload_cmd = [
+                            "curl", "-s", "-T", target_name,
+                            "-u", f"{WEBDAV_USER}:{WEBDAV_PASS}",
+                            upload_url
+                        ]
+                        subprocess.run(upload_cmd)
+                        
+                        if os.path.exists(target_name):
+                            os.remove(target_name)
                     else:
-                        os.rename(downloaded_file, target_name)
-                    
-                    print(f"Uploading target string {target_name} to Koofr cloud ecosystem...")
-                    upload_url = f"{WEBDAV_URL}/{target_name}"
-                    upload_cmd = [
-                        "curl", "-s", "-T", target_name,
-                        "-u", f"{WEBDAV_USER}:{WEBDAV_PASS}",
-                        upload_url
-                    ]
-                    subprocess.run(upload_cmd)
-                    
-                    if os.path.exists(target_name):
-                        os.remove(target_name)
+                        print("[ERROR] Final MP4 generation failed or produced a 0-byte tracking file.")
                         
                     print_storage_status()
                 else:
-                    print(f"Could not download target: {target}. It may be protected or restricted.")
+                    print(f"Could not download target: {target} or data block is empty.")
 
         if __name__ == "__main__":
             run()
