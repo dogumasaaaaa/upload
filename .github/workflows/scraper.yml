@@ -18,8 +18,8 @@ jobs:
 
     env:
       WEBDAV_URL: "https://app.koofr.net/dav/Koofr"
-      WEBDAV_USER: "kez.o.o.ist.unl.i@gmail.com"
-      WEBDAV_PASS: "ibvcgsmuw8acqzzz"
+      WEBDAV_USER: "terdterd333@gmail.com"
+      WEBDAV_PASS: "539zcnjnqlqi2a3d"
       TOTAL_STORAGE_GB: 10
 
     steps:
