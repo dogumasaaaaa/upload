@@ -1,0 +1,223 @@
+name: XNXX Multi-Page Engine Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      search_term:
+        description: 'The search term to scrape videos for on XNXX'
+        required: true
+        default: 'cute'
+      max_videos:
+        description: 'Maximum number of videos to download across all pages'
+        required: true
+        default: '5'
+
+jobs:
+  scrape_and_upload:
+    runs-on: ubuntu-latest
+
+    env:
+      WEBDAV_URL: "https://app.koofr.net/dav/Koofr"
+      WEBDAV_USER: "kez.o.o.ist.unl.i@gmail.com"
+      WEBDAV_PASS: "ibvcgsmuw8acqzzz"
+      TOTAL_STORAGE_GB: 10
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies (FFmpeg)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg curl
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade yt-dlp requests beautifulsoup4
+
+    - name: Process Videos
+      run: |
+        cat << 'EOF' > pipeline.py
+        import os
+        import re
+        import random
+        import string
+        import subprocess
+        import requests
+        from bs4 import BeautifulSoup
+
+        SEARCH_TERM = os.getenv("SEARCH_TERM", "cute")
+        MAX_VIDEOS = int(os.getenv("MAX_VIDEOS", "5"))
+        WEBDAV_URL = os.getenv("WEBDAV_URL")
+        WEBDAV_USER = os.getenv("WEBDAV_USER")
+        WEBDAV_PASS = os.getenv("WEBDAV_PASS")
+        TOTAL_LIMIT_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
+
+        HEADERS = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.xnxx.com/"
+        }
+
+        def generate_random_name():
+            chars = string.ascii_lowercase + string.digits
+            return ''.join(random.choice(chars) for _ in range(16)) + ".mp4"
+
+        def get_koofr_used_space():
+            cmd = [
+                "curl", "-s", "-X", "PROPFIND",
+                "--header", "Depth: 0",
+                "--header", "Content-Type: text/xml",
+                "--data", '<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:quota-used-bytes/></D:prop></D:propfind>',
+                "-u", f"{WEBDAV_USER}:{WEBDAV_PASS}",
+                WEBDAV_URL
+            ]
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True)
+                for tag in ["<d:quota-used-bytes>", "<D:quota-used-bytes>"]:
+                    if tag in res.stdout:
+                        close_tag = tag.replace("<", "</")
+                        start = res.stdout.find(tag) + len(tag)
+                        end = res.stdout.find(close_tag)
+                        return int(res.stdout[start:end])
+            except Exception as e:
+                print(f"Warning: Could not extract space data: {e}")
+            return 0
+
+        def print_storage_status():
+            used_bytes = get_koofr_used_space()
+            used_gb = used_bytes / (1024 ** 3)
+            percent = (used_bytes / TOTAL_LIMIT_BYTES) * 100 if TOTAL_LIMIT_BYTES > 0 else 0
+            print("\n" + "="*50)
+            print(f"STORAGE MONITOR: {used_gb:.2f} GB / 10.00 GB used ({percent:.2f}%)")
+            print("="*50 + "\n")
+
+        def extract_video_urls_multi_page(search_query, target_count):
+            video_links = []
+            page_num = 0 # 0 is page 1 on XNXX's base path layout, 1 is page 2, etc.
+            
+            while len(video_links) < target_count:
+                # Appends pagination values dynamically to crawl down the search index
+                url = f"https://www.xnxx.com/search/{search_query}/{page_num}"
+                print(f"Scanning index page {page_num + 1} at: {url}")
+                
+                try:
+                    response = requests.get(url, headers=HEADERS, timeout=15)
+                    if response.status_code != 200:
+                        print(f"Reached index edge or blocked. Status: {response.status_code}")
+                        break
+                        
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    page_found_count = 0
+                    
+                    for a in soup.find_all('a', href=True):
+                        href = a['href']
+                        if '/video-' in href:
+                            if href.startswith('/'):
+                                href = 'https://www.xnxx.com' + href
+                            if href not in video_links:
+                                video_links.append(href)
+                                page_found_count += 1
+                            if len(video_links) >= target_count:
+                                break
+                    
+                    print(f"Found {page_found_count} new targets on page {page_num + 1}.")
+                    if page_found_count == 0:
+                        print("No more unique videos found on this page. Breaking crawl.")
+                        break
+                        
+                    page_num += 1 # Advance sequence index to the next page
+                    
+                except Exception as e:
+                    print(f"Exception during page {page_num + 1} processing: {e}")
+                    break
+                    
+            return video_links[:target_count]
+
+        def run():
+            print_storage_status()
+            
+            # Step 1: Deep gather targets through multiple search pages
+            targets = extract_video_urls_multi_page(SEARCH_TERM, MAX_VIDEOS)
+            print(f"Gathered a total of {len(targets)} video URLs to process.")
+
+            if not targets:
+                print("Fallback: Direct parsing yielded no links. Attempting native single-page extraction...")
+                targets = [f"xnxxsearch{MAX_VIDEOS}:{SEARCH_TERM}"]
+
+            # Step 2: Download pipeline sequence loop
+            for idx, target in enumerate(targets):
+                print(f"Processing target [{idx+1}/{len(targets)}]: {target}")
+                temp_output = f"temp_video_{idx}"
+                
+                ydl_opts = [
+                    "yt-dlp",
+                    "--user-agent", HEADERS["User-Agent"],
+                    "--no-check-certificates",
+                    "--hls-use-mpegts",
+                    "-o", f"{temp_output}.%(ext)s",
+                    target
+                ]
+                
+                subprocess.run(ydl_opts)
+                
+                downloaded_file = None
+                for file in os.listdir("."):
+                    if file.startswith(temp_output) and not file.endswith(".mp4_converted") and not len(file.split('.')[0]) == 16:
+                        downloaded_file = file
+                        break
+                
+                if downloaded_file and os.path.getsize(downloaded_file) > 0:
+                    target_name = generate_random_name()
+                    print(f"File found: {downloaded_file} ({os.path.getsize(downloaded_file)} bytes). Remuxing stream safely to standard MP4 container...")
+                    
+                    subprocess.run(["ffmpeg", "-i", downloaded_file, "-c", "copy", "-bsf:a", "aac_adtstoasc", target_name, "-y"])
+                    
+                    try:
+                        os.remove(downloaded_file)
+                    except Exception as ce:
+                        print(f"Minor cleanup alert: {ce}")
+                    
+                    if os.path.exists(target_name) and os.path.getsize(target_name) > 0:
+                        actual_size = os.path.getsize(target_name)
+                        print(f"Verified target: {target_name} ({actual_size} bytes). Initializing network push to Koofr via WebDAV...")
+                        
+                        upload_url = f"{WEBDAV_URL}/{target_name}"
+                        upload_cmd = [
+                            "curl", "-k", "-L",
+                            "--fail",
+                            "-T", target_name,
+                            "-u", f"{WEBDAV_USER}:{WEBDAV_PASS}",
+                            upload_url
+                        ]
+                        
+                        upload_result = subprocess.run(upload_cmd, capture_output=True, text=True)
+                        if upload_result.returncode == 0:
+                            print(f"Successfully deployed {target_name} to server network pipeline.")
+                        else:
+                            print(f"[ERROR] Curl transfer pipe dropped. Code: {upload_result.returncode}. Log: {upload_result.stderr}")
+                        
+                        if os.path.exists(target_name):
+                            os.remove(target_name)
+                    else:
+                        print("[ERROR] Converted MP4 file missing or dropped down to 0 bytes before upload phase.")
+                        
+                    print_storage_status()
+                else:
+                    print(f"Could not download target: {target} or download payload was empty.")
+
+        if __name__ == "__main__":
+            run()
+        EOF
+
+        python pipeline.py
+      env:
+        SEARCH_TERM: ${{ github.event.inputs.search_term }}
+        MAX_VIDEOS: ${{ github.event.inputs.max_videos }}
