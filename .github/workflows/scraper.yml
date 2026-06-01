@@ -72,7 +72,7 @@ jobs:
 
         def get_koofr_used_space():
             cmd = [
-                "curl", "-s", "-X", "PROFIND",
+                "curl", "-s", "-X", "PROPFIND",
                 "--header", "Depth: 0",
                 "--header", "Content-Type: text/xml",
                 "--data", '<?xml version="1.0" encoding="utf-8" ?><D:propfind xmlns:D="DAV:"><D:prop><D:quota-used-bytes/></D:prop></D:propfind>',
@@ -137,47 +137,62 @@ jobs:
                     "yt-dlp",
                     "--user-agent", HEADERS["User-Agent"],
                     "--no-check-certificates",
-                    "--hls-use-mpegts",                  # Forces clean stream assembly directly to disk
+                    "--hls-use-mpegts",
                     "-o", f"{temp_output}.%(ext)s",
                     target
                 ]
                 
                 subprocess.run(ydl_opts)
                 
-                # Find the downloaded file regardless of its automatic container extension
+                # Check for files starting with our prefix, matching ANY extension (.ts, .mp4, etc.)
                 downloaded_file = None
                 for file in os.listdir("."):
-                    if file.startswith(temp_output) and not file.endswith(".mp4_converted"):
+                    if file.startswith(temp_output) and not file.endswith(".mp4_converted") and not len(file.split('.')[0]) == 16:
                         downloaded_file = file
                         break
                 
                 if downloaded_file and os.path.getsize(downloaded_file) > 0:
                     target_name = generate_random_name()
-                    print(f"File found: {downloaded_file} ({os.path.getsize(downloaded_file)} bytes). Processing to MP4...")
+                    print(f"File found: {downloaded_file} ({os.path.getsize(downloaded_file)} bytes). Remuxing stream safely to standard MP4 container...")
                     
-                    # Explicit remux via FFmpeg handles stream fixing safely without freezing the execution flow
+                    # Convert raw MPEG-TS data directly into a finalized MP4 structural file
                     subprocess.run(["ffmpeg", "-i", downloaded_file, "-c", "copy", "-bsf:a", "aac_adtstoasc", target_name, "-y"])
-                    os.remove(downloaded_file)
                     
-                    # Extra validation verification check
+                    # Safe workspace clean up for the source piece
+                    try:
+                        os.remove(downloaded_file)
+                    except Exception as ce:
+                        print(f"Minor cleanup alert: {ce}")
+                    
+                    # Explicit verification layer: Verify the converted file exists and holds actual data before executing curl
                     if os.path.exists(target_name) and os.path.getsize(target_name) > 0:
-                        print(f"Uploading target {target_name} ({os.path.getsize(target_name)} bytes) to Koofr cloud space...")
+                        actual_size = os.path.getsize(target_name)
+                        print(f"Verified target: {target_name} ({actual_size} bytes). Initializing network push to Koofr via WebDAV...")
+                        
                         upload_url = f"{WEBDAV_URL}/{target_name}"
                         upload_cmd = [
-                            "curl", "-s", "-T", target_name,
+                            "curl", "-k", "-L",
+                            "--fail",
+                            "-T", target_name,
                             "-u", f"{WEBDAV_USER}:{WEBDAV_PASS}",
                             upload_url
                         ]
-                        subprocess.run(upload_cmd)
                         
+                        upload_result = subprocess.run(upload_cmd, capture_output=True, text=True)
+                        if upload_result.returncode == 0:
+                            print(f"Successfully deployed {target_name} to server network pipeline.")
+                        else:
+                            print(f"[ERROR] Curl transfer pipe dropped. Code: {upload_result.returncode}. Log: {upload_result.stderr}")
+                        
+                        # Post-upload storage wipe
                         if os.path.exists(target_name):
                             os.remove(target_name)
                     else:
-                        print("[ERROR] Final MP4 generation failed or produced a 0-byte tracking file.")
+                        print("[ERROR] Converted MP4 file missing or dropped down to 0 bytes before upload phase.")
                         
                     print_storage_status()
                 else:
-                    print(f"Could not download target: {target} or data block is empty.")
+                    print(f"Could not download target: {target} or download payload was empty.")
 
         if __name__ == "__main__":
             run()
