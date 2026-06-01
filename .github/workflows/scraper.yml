@@ -1,12 +1,12 @@
-name: Video Scraper and Koofr Uploader
+name: XNXX Engine Scraper and Koofr Uploader
 
 on:
   workflow_dispatch:
     inputs:
       search_term:
-        description: 'The search term to scrape videos for'
+        description: 'The search term to scrape videos for on XNXX'
         required: true
-        default: 'nature'
+        default: 'cute'
       max_videos:
         description: 'Maximum number of videos to download'
         required: true
@@ -29,41 +29,49 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-state: '3.10'
+        python-version: '3.10'
 
     - name: Install System Dependencies (FFmpeg)
       run: |
         sudo apt-get update
-        sudo apt-get install -y ffmpeg
+        sudo apt-get install -y ffmpeg curl
 
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yt-dlp
+        pip install --upgrade yt-dlp requests beautifulsoup4
 
     - name: Process Videos
       run: |
         cat << 'EOF' > pipeline.py
         import os
+        import re
         import random
         import string
         import subprocess
-        import json
+        import requests
+        from bs4 import BeautifulSoup
 
-        SEARCH_TERM = os.getenv("SEARCH_TERM", "nature")
+        SEARCH_TERM = os.getenv("SEARCH_TERM", "cute")
         MAX_VIDEOS = int(os.getenv("MAX_VIDEOS", "3"))
         WEBDAV_URL = os.getenv("WEBDAV_URL")
         WEBDAV_USER = os.getenv("WEBDAV_USER")
         WEBDAV_PASS = os.getenv("WEBDAV_PASS")
         TOTAL_LIMIT_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
 
+        # Headers to closely mimic the Chrome browser session in your screenshot
+        HEADERS = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.xnxx.com/"
+        }
+
         def generate_random_name():
-            # Generates a random lowercase alphanumeric string (no symbols)
             chars = string.ascii_lowercase + string.digits
             return ''.join(random.choice(chars) for _ in range(16)) + ".mp4"
 
         def get_koofr_used_space():
-            # Checks WebDAV storage metrics using a PROPFIND quota request
             cmd = [
                 "curl", "-s", "-X", "PROPFIND",
                 "--header", "Depth: 0",
@@ -74,15 +82,12 @@ jobs:
             ]
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True)
-                # Parse the raw bytes tag out of the XML response safely
-                if "<d:quota-used-bytes>" in res.stdout:
-                    start = res.stdout.find("<d:quota-used-bytes>") + len("<d:quota-used-bytes>")
-                    end = res.stdout.find("</d:quota-used-bytes>")
-                    return int(res.stdout[start:end])
-                elif "<D:quota-used-bytes>" in res.stdout:
-                    start = res.stdout.find("<D:quota-used-bytes>") + len("<D:quota-used-bytes>")
-                    end = res.stdout.find("</D:quota-used-bytes>")
-                    return int(res.stdout[start:end])
+                for tag in ["<d:quota-used-bytes>", "<D:quota-used-bytes>"]:
+                    if tag in res.stdout:
+                        close_tag = tag.replace("<", "</")
+                        start = res.stdout.find(tag) + len(tag)
+                        end = res.stdout.find(close_tag)
+                        return int(res.stdout[start:end])
             except Exception as e:
                 print(f"Warning: Could not extract space data: {e}")
             return 0
@@ -95,42 +100,76 @@ jobs:
             print(f"STORAGE MONITOR: {used_gb:.2f} GB / 10.00 GB used ({percent:.2f}%)")
             print("="*50 + "\n")
 
+        def extract_video_urls(search_query):
+            url = f"https://www.xnxx.com/search/{search_query}"
+            print(f"Parsing page links from: {url}")
+            video_links = []
+            try:
+                response = requests.get(url, headers=HEADERS, timeout=15)
+                if response.status_code == 200:
+                    soup = BeautifulSoup(response.text, 'html.parser')
+                    # Find all thumbnail link containers matching standard layout hrefs
+                    for a in soup.find_all('a', href=True):
+                        href = a['href']
+                        if '/video-' in href and href not in video_links:
+                            if href.startswith('/'):
+                                href = 'https://www.xnxx.com' + href
+                            video_links.append(href)
+                            if len(video_links) >= MAX_VIDEOS:
+                                break
+                else:
+                    print(f"Failed to fetch page. Status code: {response.status_code}")
+            except Exception as e:
+                print(f"Scraping exception: {e}")
+            return video_links
+
         def run():
             print_storage_status()
-
-            # Search queries URL construction for scraping video landing targets
-            search_url = f"ytsearch{MAX_VIDEOS}:pornhub {SEARCH_TERM}"
-            print(f"Searching and downloading top {MAX_VIDEOS} items matching: '{SEARCH_TERM}'")
-
-            # Download using a generic output structure, enforce format conversion via ffmpeg post-processor
-            # ytdlp automatically changes any container (like transport streams .ts) into standard mp4 container
-            ydl_opts = [
-                "yt-dlp",
-                "--max-downloads", str(MAX_VIDEOS),
-                "--format", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b",
-                "--merge-output-format", "mp4",
-                "-o", "temp_video_download.%(ext)s",
-                search_url
-            ]
             
-            subprocess.run(ydl_opts)
+            # Step 1: Scrape individual targets directly to bypass yt-dlp search limitations
+            targets = extract_video_urls(SEARCH_TERM)
+            if not targets:
+                print("Fallback: Direct parsing yielded no links. Attempting native search extraction...")
+                targets = [f"xnxxsearch{MAX_VIDEOS}:{SEARCH_TERM}"]
 
-            # Look through local workspace items
-            for file in os.listdir("."):
-                if file.startswith("temp_video_download"):
-                    # Double-check formats to explicitly enforce compliance 
-                    base, ext = os.path.splitext(file)
+            # Step 2: Download each target link sequentially
+            for idx, target in enumerate(targets):
+                print(f"Processing target [{idx+1}/{len(targets)}]: {target}")
+                temp_output = f"temp_video_{idx}"
+                
+                ydl_opts = [
+                    "yt-dlp",
+                    "--user-agent", HEADERS["User-Agent"],
+                    "--no-check-certificates",
+                    "--format", "mp4/best",
+                    "--merge-output-format", "mp4",
+                    "-o", f"{temp_output}.%(ext)s",
+                    target
+                ]
+                
+                result = subprocess.run(ydl_opts)
+                
+                # Verify and process download workspace assets
+                downloaded_file = None
+                for file in os.listdir("."):
+                    if file.startswith(temp_output):
+                        downloaded_file = file
+                        break
+                
+                if downloaded_file:
+                    base, ext = os.path.splitext(downloaded_file)
                     target_name = generate_random_name()
                     
+                    # Normalize stream container formats to mp4 if needed
                     if ext.lower() != ".mp4":
-                        print(f"Normalizing internal stream {file} into {target_name} via FFmpeg...")
-                        subprocess.run(["ffmpeg", "-i", file, "-c", "copy", target_name, "-y"])
-                        os.remove(file)
+                        print(f"Converting format {ext} to standard .mp4 container via FFmpeg...")
+                        subprocess.run(["ffmpeg", "-i", downloaded_file, "-c", "copy", target_name, "-y"])
+                        os.remove(downloaded_file)
                     else:
-                        os.rename(file, target_name)
+                        os.rename(downloaded_file, target_name)
                     
-                    # Upload process via HTTP PUT
-                    print(f"Uploading {target_name} to Koofr account WebDAV network location...")
+                    # Step 3: WebDAV Upload Pipeline Execution
+                    print(f"Uploading target string {target_name} to Koofr cloud ecosystem...")
                     upload_url = f"{WEBDAV_URL}/{target_name}"
                     upload_cmd = [
                         "curl", "-s", "-T", target_name,
@@ -139,12 +178,13 @@ jobs:
                     ]
                     subprocess.run(upload_cmd)
                     
-                    # Cleanup local node footprint
+                    # Clear workspace
                     if os.path.exists(target_name):
                         os.remove(target_name)
-                    
-                    # Live tracking status display
+                        
                     print_storage_status()
+                else:
+                    print(f"Could not download target: {target}. It may be protected or restricted.")
 
         if __name__ == "__main__":
             run()
